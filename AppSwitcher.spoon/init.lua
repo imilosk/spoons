@@ -90,10 +90,13 @@ function obj:_ensureAppVisibility(app)
     if not needsAction then
         -- Check if app has no windows at all (closed with Cmd+W)
         if #windows == 0 then
-            self.logger.i("App has no windows, creating new window: " .. (app:title() or "Unknown"))
+            self.logger.i("App has no windows, restoring window: " .. (app:title() or "Unknown"))
 
-            -- Immediately try keyboard shortcut (fastest method)
-            hs.eventtap.keyStroke({ "cmd" }, "n")
+            -- Force activation first
+            app:activate(true)
+
+            -- App-specific window restoration
+            self:_restoreAppWindow(app)
             return
         else
             return
@@ -118,6 +121,52 @@ function obj:_ensureAppVisibility(app)
 
     hs.timer.doAfter(0.1, function()
         app:activate(true) -- Force activation
+
+        local mainWindow = app:mainWindow()
+        if mainWindow then
+            mainWindow:focus()
+            mainWindow:raise()
+        end
+    end)
+end
+
+function obj:_restoreAppWindow(app)
+    if not app then
+        return
+    end
+
+    self.logger.d("Restoring window for: " .. app:title())
+
+    local success = false
+
+    -- Strategy 1: Try standard new window shortcuts
+    success = app:selectMenuItem({ "File", "New" })
+    if not success then
+        success = app:selectMenuItem({ "File", "New Window" })
+    end
+
+    -- Strategy 2: Try Window menu for main window
+    if not success then
+        success = app:selectMenuItem({ "Window", app:title() }) or
+            app:selectMenuItem({ "Window", "Show " .. app:title() }) or
+            app:selectMenuItem({ "Window", "Main Window" })
+    end
+
+    -- Strategy 3: Keyboard shortcuts
+    if not success then
+        hs.eventtap.keyStroke({ "cmd" }, "n") -- New window/document
+    end
+
+    -- Strategy 4: Try Cmd+1 (often brings main window for apps like Spotify)
+    hs.timer.doAfter(0.05, function()
+        hs.eventtap.keyStroke({ "cmd" }, "1")
+    end)
+
+    -- Ensure focus after restoration
+    hs.timer.doAfter(0.1, function()
+        if not app:isFrontmost() then
+            app:activate(true)
+        end
 
         local mainWindow = app:mainWindow()
         if mainWindow then
