@@ -1,0 +1,150 @@
+local obj = {}
+obj.__index = obj
+
+-- Metadata
+obj.name = "DailyWallpaper"
+obj.version = "1.0"
+obj.author = "imilosk"
+obj.homepage = "https://github.com/imilosk/spoons"
+obj.license = "MIT - https://opensource.org/licenses/MIT"
+
+obj.logger = hs.logger.new('DailyWallpaper')
+obj.wallpaperDir = os.getenv("HOME") .. "/.hammerspoon/wallpapers/daily/"
+obj.apiUrl = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
+
+function obj:init()
+    self.logger.i("Initializing DailyWallpaper spoon")
+    return self
+end
+
+function obj:start()
+    self.logger.i("Starting DailyWallpaper spoon")
+
+    self:_ensureWallpaperDirectory()
+    self:downloadWallpaper()
+
+    return self
+end
+
+function obj:stop()
+    self.logger.i("Stopping DailyWallpaper spoon")
+    return self
+end
+
+function obj:_ensureWallpaperDirectory()
+    if not hs.fs.attributes(self.wallpaperDir) then
+        self:_createDirectoryRecursive(self.wallpaperDir)
+        self.logger.i("Created wallpaper directory: " .. self.wallpaperDir)
+    else
+        self.logger.d("Wallpaper directory already exists: " .. self.wallpaperDir)
+    end
+end
+
+function obj:_createDirectoryRecursive(path)
+    path = path:gsub("/$", "")
+
+    local command = "mkdir -p '" .. path .. "'"
+    local output, status = hs.execute(command)
+
+    if status then
+        self.logger.i("Successfully created directory path: " .. path)
+        return true
+    else
+        self.logger.e("Failed to create directory path: " .. path .. " - " .. (output or "unknown error"))
+        return false
+    end
+end
+
+function obj:downloadWallpaper()
+    self.logger.i("Fetching wallpaper metadata from Bing API")
+
+    hs.http.asyncGet(self.apiUrl, nil, function(status, body, headers)
+        if status == 200 then
+            self:_processApiResponse(body)
+        else
+            self.logger.e("Failed to fetch wallpaper metadata. HTTP status: " .. status)
+        end
+    end)
+end
+
+function obj:_processApiResponse(body)
+    local success, data = pcall(hs.json.decode, body)
+
+    if not success or not data or not data.images or #data.images == 0 then
+        self.logger.e("Failed to parse API response or no images found")
+        return
+    end
+
+    local imageData = data.images[1]
+    local urlbase = imageData.urlbase
+    local title = imageData.title or "Unknown"
+
+    self.logger.i("Found wallpaper: " .. title)
+
+    local imageUrl = "https://www.bing.com" .. urlbase .. "_UHD.jpg"
+    local fallbackUrl = "https://www.bing.com" .. urlbase .. "_1920x1080.jpg"
+
+    self:_downloadWallpaperImage(imageUrl, fallbackUrl, title)
+end
+
+function obj:_downloadWallpaperImage(imageUrl, fallbackUrl, title)
+    local filename = os.date("%Y-%m-%d") .. ".jpg"
+    local dir = self.wallpaperDir:gsub("/$", "") .. "/"
+    local filepath = dir .. filename
+
+    if hs.fs.attributes(filepath) then
+        self.logger.i("Today's wallpaper already exists: " .. filename)
+        -- Set existing wallpaper
+        self:_setWallpaper(filepath)
+        return
+    end
+
+    self.logger.i("Downloading wallpaper: " .. filename)
+
+    hs.http.asyncGet(imageUrl, nil, function(status, body, headers)
+        if status == 200 then
+            self:_saveWallpaper(body, filepath, title)
+        else
+            self.logger.w("UHD download failed (status: " .. status .. "), trying fallback resolution")
+            hs.http.asyncGet(fallbackUrl, nil, function(status2, body2, headers2)
+                if status2 == 200 then
+                    self:_saveWallpaper(body2, filepath, title)
+                else
+                    self.logger.e("Both UHD and fallback downloads failed")
+                end
+            end)
+        end
+    end)
+end
+
+function obj:_saveWallpaper(imageData, filepath, title)
+    local file = io.open(filepath, "wb")
+    if file then
+        file:write(imageData)
+        file:close()
+        self.logger.i("Wallpaper saved: " .. filepath)
+
+        -- Set as wallpaper for all screens
+        self:_setWallpaper(filepath)
+
+        hs.notify.new({
+            title = "Daily Wallpaper",
+            informativeText = "Set wallpaper: " .. title,
+            withdrawAfter = 3
+        }):send()
+    else
+        self.logger.e("Failed to save wallpaper to: " .. filepath)
+    end
+end
+
+function obj:_setWallpaper(filepath)
+    local screens = hs.screen.allScreens()
+
+    for _, screen in ipairs(screens) do
+        screen:desktopImageURL("file://" .. filepath)
+    end
+
+    self.logger.i("Wallpaper set for " .. #screens .. " screen(s): " .. filepath)
+end
+
+return obj
