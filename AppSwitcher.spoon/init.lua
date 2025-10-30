@@ -60,8 +60,8 @@ function obj:_handleAppActivation(app)
 
     self.logger.d("App activated: " .. (app:title() or "Unknown"))
 
-    -- Small delay to ensure the activation is complete
-    hs.timer.doAfter(0.05, function()
+    -- Immediate check with minimal delay for responsiveness
+    hs.timer.doAfter(0.01, function()
         self:_ensureAppVisibility(app)
     end)
 end
@@ -73,17 +73,31 @@ function obj:_ensureAppVisibility(app)
 
     local wasHidden = app:isHidden()
     local hadMinimizedWindows = false
+    local hasVisibleWindows = false
 
     local windows = app:allWindows()
     for _, window in ipairs(windows) do
         if window:isMinimized() then
             hadMinimizedWindows = true
-            break
+        elseif window:isVisible() and not window:isMinimized() then
+            hasVisibleWindows = true
         end
     end
 
-    if not wasHidden and not hadMinimizedWindows then
-        return
+    -- Act if the app was hidden, had minimized windows, or has no visible windows
+    local needsAction = wasHidden or hadMinimizedWindows or (not hasVisibleWindows and #windows > 0)
+
+    if not needsAction then
+        -- Check if app has no windows at all (closed with Cmd+W)
+        if #windows == 0 then
+            self.logger.i("App has no windows, creating new window: " .. (app:title() or "Unknown"))
+
+            -- Immediately try keyboard shortcut (fastest method)
+            hs.eventtap.keyStroke({ "cmd" }, "n")
+            return
+        else
+            return
+        end
     end
 
     self.logger.i("Ensuring visibility for: " .. (app:title() or "Unknown"))
