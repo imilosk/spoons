@@ -30,7 +30,6 @@ end
 
 function obj:start()
     self.logger.i("Starting WindowManager")
-    -- Disable window animations for instant movement
     hs.window.animationDuration = 0
     return self
 end
@@ -107,7 +106,26 @@ end
 function obj:maximize()
     local win = hs.window.focusedWindow()
     if win then
-        win:maximize()
+        local screen = win:screen()
+        local screenFrame = screen:frame()
+        local currentFrame = win:frame()
+
+        local isMaximized = (
+            math.abs(currentFrame.x - screenFrame.x) < 10 and
+            math.abs(currentFrame.y - screenFrame.y) < 10 and
+            math.abs(currentFrame.w - screenFrame.w) < 20 and
+            math.abs(currentFrame.h - screenFrame.h) < 20
+        )
+
+        if isMaximized then
+            local newFrame = win:frame()
+            newFrame.w = screenFrame.w * 0.75
+            newFrame.h = screenFrame.h * 0.75
+            win:setFrame(newFrame)
+            self:center()
+        else
+            win:maximize()
+        end
     end
     return self
 end
@@ -186,16 +204,16 @@ end
 
 function obj:bindHotkeys(mapping)
     local def = {
-        left_half = self.leftHalf,
-        right_half = self.rightHalf,
-        top_half = self.topHalf,
-        bottom_half = self.bottomHalf,
-        maximize = self.maximize,
-        center = self.center,
-        top_left = self.topLeft,
-        top_right = self.topRight,
-        bottom_left = self.bottomLeft,
-        bottom_right = self.bottomRight,
+        left_half = function() self:leftHalf() end,
+        right_half = function() self:rightHalf() end,
+        top_half = function() self:topHalf() end,
+        bottom_half = function() self:bottomHalf() end,
+        maximize = function() self:maximize() end,
+        center = function() self:center() end,
+        top_left = function() self:topLeft() end,
+        top_right = function() self:topRight() end,
+        bottom_left = function() self:bottomLeft() end,
+        bottom_right = function() self:bottomRight() end,
     }
     hs.spoons.bindHotkeysToSpec(def, mapping)
     return self
