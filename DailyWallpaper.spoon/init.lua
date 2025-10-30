@@ -12,6 +12,10 @@ obj.logger = hs.logger.new('DailyWallpaper')
 obj.wallpaperDir = os.getenv("HOME") .. "/.hammerspoon/wallpapers/daily/"
 obj.apiUrl = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
 
+-- Timer configuration
+obj.updateInterval = 900 -- 15 minutes in seconds
+obj._timer = nil
+
 function obj:init()
     self.logger.i("Initializing DailyWallpaper spoon")
     return self
@@ -20,15 +24,33 @@ end
 function obj:start()
     self.logger.i("Starting DailyWallpaper spoon")
 
-    self:_ensureWallpaperDirectory()
-    self:downloadWallpaper()
+    self:_setTodaysWallpaper()
+
+    -- Start timer to set wallpaper every 15 minutes
+    self._timer = hs.timer.doEvery(self.updateInterval, function()
+        self:_setTodaysWallpaper()
+    end)
+    self.logger.i("Wallpaper timer started - setting wallpaper every " .. (self.updateInterval / 60) .. " minutes")
 
     return self
 end
 
 function obj:stop()
     self.logger.i("Stopping DailyWallpaper spoon")
+
+    -- Stop the timer
+    if self._timer then
+        self._timer:stop()
+        self._timer = nil
+        self.logger.i("Wallpaper timer stopped")
+    end
+
     return self
+end
+
+function obj:_setTodaysWallpaper()
+    self:_ensureWallpaperDirectory()
+    self:downloadWallpaper()
 end
 
 function obj:_ensureWallpaperDirectory()
