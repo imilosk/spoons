@@ -114,29 +114,194 @@ function obj:_downloadWallpaperImage(imageUrl, fallbackUrl, title)
     local dir = self.wallpaperDir:gsub("/$", "") .. "/"
     local filepath = dir .. filename
 
-    if hs.fs.attributes(filepath) then
-        self.logger.i("Today's wallpaper already exists: " .. filename)
-        -- Set existing wallpaper
-        self:_setWallpaper(filepath)
-        return
-    end
-
-    self.logger.i("Downloading wallpaper: " .. filename)
+    self.logger.i("Downloading wallpaper for hash comparison: " .. filename)
 
     hs.http.asyncGet(imageUrl, nil, function(status, body, headers)
         if status == 200 then
-            self:_saveWallpaper(body, filepath, title)
+            self:_checkHashAndSave(body, filepath, title)
         else
             self.logger.w("UHD download failed (status: " .. status .. "), trying fallback resolution")
             hs.http.asyncGet(fallbackUrl, nil, function(status2, body2, headers2)
                 if status2 == 200 then
-                    self:_saveWallpaper(body2, filepath, title)
+                    self:_checkHashAndSave(body2, filepath, title)
                 else
                     self.logger.e("Both UHD and fallback downloads failed")
                 end
             end)
         end
     end)
+end
+
+function obj:_checkHashAndSave(imageData, filepath, title)
+    local newHash = self:_calculateHash(imageData)
+    self.logger.d("New image hash: " .. newHash)
+
+    -- Check if today's file already exists
+    local todayFileExists = hs.fs.attributes(filepath)
+    local existingHash = nil
+
+    if todayFileExists then
+        existingHash = self:_getFileHash(filepath)
+        self.logger.d("Existing file hash: " .. (existingHash or "unknown"))
+
+        if existingHash == newHash then
+            self.logger.i("Today's wallpaper already exists and is current: " .. filepath)
+            self:_setWallpaper(filepath)
+            return
+        else
+            self.logger.i("Today's wallpaper exists but is outdated, will override")
+        end
+    end
+
+    -- Check if we already have this image elsewhere
+    local existingFile = self:_findImageByHash(newHash)
+
+    if existingFile and existingFile ~= filepath then
+        self.logger.i("Image with same hash already exists: " .. existingFile)
+        self.logger.i("Creating symlink instead of duplicate download")
+
+        -- Remove existing file if it exists (since we're overriding)
+        if todayFileExists then
+            os.remove(filepath)
+            self.logger.i("Removed outdated file: " .. filepath)
+        end
+
+        -- Create symlink to existing file
+        local command = "ln -sf '" .. existingFile .. "' '" .. filepath .. "'"
+        local output, status = hs.execute(command)
+
+        if status then
+            self.logger.i("Created symlink: " .. filepath .. " -> " .. existingFile)
+            self:_setWallpaper(filepath)
+
+            hs.notify.new({
+                title = "Daily Wallpaper",
+                informativeText = "Reusing existing wallpaper: " .. title,
+                withdrawAfter = 3
+            }):send()
+        else
+            self.logger.e("Failed to create symlink, saving as new file instead")
+            self:_saveWallpaper(imageData, filepath, title)
+            self:_storeImageHash(filepath, newHash)
+        end
+    else
+        -- Save new image and store its hash (this will override existing file if needed)
+        self:_saveWallpaper(imageData, filepath, title)
+        self:_storeImageHash(filepath, newHash)
+
+        -- If we had an old hash for this file, clean it up from the database
+        if existingHash and existingHash ~= newHash then
+            self:_removeHashFromDatabase(existingHash)
+        end
+    end
+end
+
+function obj:_calculateHash(data)
+    -- Use Hammerspoon's built-in hash function
+    return hs.hash.SHA256(data)
+end
+
+function obj:_getHashFilePath()
+    return self.wallpaperDir:gsub("/$", "") .. "/hashes.json"
+end
+
+function obj:_loadHashDatabase()
+    local hashFile = self:_getHashFilePath()
+
+    if not hs.fs.attributes(hashFile) then
+        return {}
+    end
+
+    local file = io.open(hashFile, "r")
+    if not file then
+        return {}
+    end
+
+    local content = file:read("*all")
+    file:close()
+
+    local success, data = pcall(hs.json.decode, content)
+    return success and data or {}
+end
+
+function obj:_saveHashDatabase(hashDb)
+    local hashFile = self:_getHashFilePath()
+    local file = io.open(hashFile, "w")
+
+    if file then
+        file:write(hs.json.encode(hashDb))
+        file:close()
+        return true
+    end
+
+    return false
+end
+
+function obj:_storeImageHash(filepath, hash)
+    local hashDb = self:_loadHashDatabase()
+    hashDb[hash] = filepath
+
+    if self:_saveHashDatabase(hashDb) then
+        self.logger.d("Stored hash for: " .. filepath)
+    else
+        self.logger.w("Failed to store hash for: " .. filepath)
+    end
+end
+
+function obj:_findImageByHash(hash)
+    local hashDb = self:_loadHashDatabase()
+    local filepath = hashDb[hash]
+
+    -- Verify the file still exists
+    if filepath and hs.fs.attributes(filepath) then
+        return filepath
+    elseif filepath then
+        -- File was deleted, remove from hash database
+        hashDb[hash] = nil
+        self:_saveHashDatabase(hashDb)
+    end
+
+    return nil
+end
+
+function obj:_getFileHash(filepath)
+    -- Check if it's a symlink first
+    local command = "readlink '" .. filepath .. "'"
+    local output, status = hs.execute(command)
+
+    if status then
+        -- It's a symlink, get the target file's hash
+        local targetFile = output:gsub("%s+$", "") -- trim whitespace
+        return self:_getFileHash(targetFile)
+    end
+
+    -- Read the actual file and calculate its hash
+    local file = io.open(filepath, "rb")
+    if not file then
+        self.logger.w("Could not open file for hash calculation: " .. filepath)
+        return nil
+    end
+
+    local content = file:read("*all")
+    file:close()
+
+    if content then
+        return self:_calculateHash(content)
+    end
+
+    return nil
+end
+
+function obj:_removeHashFromDatabase(hash)
+    local hashDb = self:_loadHashDatabase()
+    if hashDb[hash] then
+        hashDb[hash] = nil
+        if self:_saveHashDatabase(hashDb) then
+            self.logger.d("Removed old hash from database: " .. hash)
+        else
+            self.logger.w("Failed to remove old hash from database")
+        end
+    end
 end
 
 function obj:_saveWallpaper(imageData, filepath, title)
